@@ -1,0 +1,7 @@
+case-aware-lex-nexus-94/
+docling/
+eyecite/
+graphiti/
+*.venv/
+*.env*
+pageIndex/
