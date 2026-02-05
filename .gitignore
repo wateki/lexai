@@ -5,3 +5,4 @@ graphiti/
 *.venv/
 *.env*
 pageIndex/
+PageIndex/

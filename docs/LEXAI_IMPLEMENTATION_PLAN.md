@@ -4,7 +4,7 @@ This document is a **detailed, robust implementation plan** to deliver the LexAI
 
 **Core Strategy:** **Accuracy-first** approach using **Docling + PageIndex** for reasoning-based retrieval (98.7% accuracy) with **Graphiti** for relationship tracking, prioritizing legal precision over speed.
 
-**Strategy reference:** [LEXAI_STRATEGY_VISION.md](./LEXAI_STRATEGY_VISION.md)  
+**Strategy reference:** [LEXAI_STRATEGY_VISION.md](./LEXAI_STRATEGY_VISION.md)
 **Architecture reference:** [Legal_kb.md](./Legal_kb.md)  
 **Graphiti Integration Analysis:** [GRAPHITI_INTEGRATION_ANALYSIS.md](./GRAPHITI_INTEGRATION_ANALYSIS.md)
 
