@@ -1,8 +1,10 @@
 """
 Legal KB processor worker: full Docling + PageIndex pipeline with metadata extraction,
 citation parsing, optional embedding, and optional Graphiti episode.
+Also processes case documents (Phase 4) via case_document_processing_jobs.
 """
 import argparse
+import asyncio
 import logging
 import sys
 import tempfile
@@ -15,7 +17,9 @@ from supabase import create_client
 from .citations import parse_citations
 from .config import (
     DOCLING_MAX_RETRIES,
+    ENABLE_GRAPHITI,
     ENABLE_VECTOR_FALLBACK,
+    GRAPHITI_DATABASE,
     LEGAL_KB_BUCKET,
     LOG_LEVEL,
     MAX_TEXT_FOR_EMBEDDING,
@@ -236,26 +240,144 @@ def process_job(supabase, job: dict, entry_id: str) -> None:
         Path(file_path).unlink(missing_ok=True)
 
 
+# --- Case document pipeline (Phase 4) ---
+
+CASE_DOC_PIPELINE = "docling_pageindex"
+
+
+def poll_one_case_doc_job(supabase):
+    """Fetch one queued case document job; mark as processing; return (job, document_id)."""
+    r = (
+        supabase.table("case_document_processing_jobs")
+        .select("id, document_id, case_id, organization_id, storage_bucket, storage_path, attempts")
+        .eq("status", "queued")
+        .eq("pipeline", CASE_DOC_PIPELINE)
+        .order("created_at", desc=False)
+        .limit(1)
+        .execute()
+    )
+    if not r.data or len(r.data) == 0:
+        return None, None
+    job = r.data[0]
+    job_id = job["id"]
+    document_id = job["document_id"]
+    supabase.table("case_document_processing_jobs").update({
+        "status": "processing",
+        "attempts": job.get("attempts", 0) + 1,
+        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+    }).eq("id", job_id).execute()
+    supabase.table("documents").update({
+        "processing_status": "processing",
+        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+    }).eq("id", document_id).execute()
+    return job, document_id
+
+
+def process_case_document_job(supabase, job: dict, document_id: str) -> None:
+    """Run Docling + PageIndex on a case document; update documents row."""
+    bucket = job.get("storage_bucket") or "documents"
+    path = job["storage_path"]
+    job_id = job["id"]
+    case_id = job.get("case_id")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(path).suffix or ".pdf") as f:
+        f.write(download_file(supabase, bucket, path))
+        file_path = f.name
+
+    try:
+        markdown_text, docling_json = run_docling(file_path)
+        supabase.table("documents").update({
+            "docling_markdown": markdown_text,
+            "docling_json": docling_json,
+            "processing_status": "docling_complete",
+            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }).eq("id", document_id).execute()
+
+        add_summary = PAGEINDEX_ADD_NODE_SUMMARY and bool(OPENAI_API_KEY)
+        tree_result = run_pageindex_from_markdown(markdown_text, add_summary=add_summary)
+        depth, count = tree_depth_and_count(tree_result)
+        pageindex_metadata = {
+            "tree_depth": depth,
+            "node_count": count,
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
+
+        supabase.table("documents").update({
+            "pageindex_tree": tree_result,
+            "pageindex_metadata": pageindex_metadata,
+            "processing_status": "completed",
+            "processing_pipeline": CASE_DOC_PIPELINE,
+            "ai_processed": True,
+            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }).eq("id", document_id).execute()
+
+        if case_id and ENABLE_GRAPHITI:
+            try:
+                from .graphiti_client import get_graphiti_client
+                client = get_graphiti_client()
+                if client:
+                    episode_body = (
+                        f"Case document document_id={document_id} case_id={case_id}. "
+                        f"Content summary (first 500 chars): {markdown_text[:500]}"
+                    )
+                    asyncio.run(
+                        client.add_episode(
+                            name=f"case_document_{document_id}",
+                            episode_body=episode_body,
+                            source_description="Case document",
+                            reference_time=datetime.now(timezone.utc),
+                            group_id=GRAPHITI_DATABASE or None,
+                        )
+                    )
+            except Exception as e:
+                logger.warning("Graphiti case document episode failed: %s", e)
+
+        supabase.table("case_document_processing_jobs").update({
+            "status": "completed",
+            "processed_at": datetime.now(tz=timezone.utc).isoformat(),
+            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }).eq("id", job_id).execute()
+        logger.info("Case document job %s document %s completed", job_id, document_id)
+    except Exception as e:
+        err_msg = str(e)
+        logger.exception("Case document job %s failed: %s", job_id, err_msg)
+        supabase.table("case_document_processing_jobs").update({
+            "status": "failed",
+            "last_error": err_msg[:5000],
+            "processed_at": datetime.now(tz=timezone.utc).isoformat(),
+            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }).eq("id", job_id).execute()
+        supabase.table("documents").update({
+            "processing_status": "failed",
+            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+        }).eq("id", document_id).execute()
+    finally:
+        Path(file_path).unlink(missing_ok=True)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Legal KB processor worker (full Docling + PageIndex pipeline)")
-    parser.add_argument("--once", action="store_true", help="Process one job and exit")
+    parser = argparse.ArgumentParser(description="Legal KB + case document processor (Docling + PageIndex)")
+    parser.add_argument("--once", action="store_true", help="Process one job (either queue) and exit")
     parser.add_argument("--interval", type=int, default=60, help="Poll interval in seconds (default 60)")
     args = parser.parse_args()
 
     supabase = get_supabase()
 
-    if args.once:
+    def do_one_cycle():
         job, entry_id = poll_one_job(supabase)
         if job and entry_id:
             process_job(supabase, job, entry_id)
-        else:
-            logger.info("No queued jobs")
+            return
+        cjob, doc_id = poll_one_case_doc_job(supabase)
+        if cjob and doc_id:
+            process_case_document_job(supabase, cjob, doc_id)
+
+    if args.once:
+        do_one_cycle()
         return
 
     while True:
-        job, entry_id = poll_one_job(supabase)
-        if job and entry_id:
-            process_job(supabase, job, entry_id)
+        do_one_cycle()
         time.sleep(args.interval)
 
 

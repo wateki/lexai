@@ -1,0 +1,13 @@
+# FalkorDB for Graphiti (Phase 3). Run: docker compose -f docker-compose.graphiti.yml up -d
+# Then set LEGAL_KB_GRAPHITI_FALKORDB_HOST=localhost, LEGAL_KB_GRAPHITI_FALKORDB_PORT=6379
+# and LEGAL_KB_ENABLE_GRAPHITI=yes. Start the Graphiti API service (workers/graphiti_service).
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

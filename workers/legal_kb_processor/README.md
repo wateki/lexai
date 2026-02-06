@@ -13,6 +13,7 @@ Background worker that processes `legal_kb_processing_jobs` with the **full Docl
 7. **Optional embedding:** Generate `ai_embedding` for pgvector quick lookups (if `LEGAL_KB_ENABLE_VECTOR_FALLBACK=yes`).
 8. **Optional Graphiti:** Add document as episode for topic-case graph (if `LEGAL_KB_ENABLE_GRAPHITI=yes`).
 9. Final DB update and mark job `completed` or `failed`.
+10. **Optional reassessment callback:** After success, call Next.js to enqueue proactive brain jobs for cases linked to this entry (graph-driven reassessment). `POST {NEXTJS_URL}/api/legal-database/entries/{entry_id}/on-processing-complete` with header `Authorization: Bearer <CRON_SECRET>` or `x-cron-secret: <CRON_SECRET>`. Body optional: `{ "organization_id": "<org_id>" }`. See Plan §6.4.
 
 ## Dependencies
 

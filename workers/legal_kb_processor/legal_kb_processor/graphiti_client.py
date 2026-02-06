@@ -2,6 +2,9 @@
 Optional Graphiti client for adding Legal KB entries as episodes (topic-case graph).
 Requires ENABLE_GRAPHITI and FalkorDB or Neo4j configuration.
 Uses pip-installed graphiti-core (e.g. pip install graphiti-core[falkordb]).
+
+For add_episode/search API details and local codebase reference, see:
+  docs/GRAPHITI_CONSUMPTION.md (and graphiti/examples/quickstart/quickstart_falkordb.py).
 """
 import asyncio
 import logging
